@@ -26,6 +26,32 @@ jobs:
           echo "===== AFTER ====="
           grep -n "MODVERSIONS\|KPROBES\|DEBUG_KERNEL\|TRACE_IRQFLAGS\|DEBUG_SPINLOCK\|DEBUG_PREEMPT" $DEF || true
 
+      - name: Patch softirq.c add trace_hardirqs shim
+        run: |
+          set -e
+          F=kernel/softirq.c
+          if grep -q "EXPORT_SYMBOL(trace_hardirqs_on)" $F; then
+            echo "already patched"
+          else
+            cat >> $F <<'PATCHEOF'
+
+/* TwT compatibility shim: expose pre-4.19 symbol names */
+void trace_hardirqs_on(void)
+{
+	trace_preempt_on(CALLER_ADDR0, _RET_IP_);
+}
+EXPORT_SYMBOL(trace_hardirqs_on);
+
+void trace_hardirqs_off(void)
+{
+	trace_preempt_off(CALLER_ADDR0, _RET_IP_);
+}
+EXPORT_SYMBOL(trace_hardirqs_off);
+PATCHEOF
+          fi
+          echo "===== tail of softirq.c ====="
+          tail -16 $F
+
       - name: Check submodules
         run: |
           ls -la KernelSU || echo "KernelSU missing"
@@ -72,9 +98,10 @@ jobs:
           IMG=out/arch/arm64/boot/Image
           echo "===== SYMBOL CHECK ====="
           for s in register_kprobe unregister_kprobe register_kretprobe unregister_kretprobe _raw_spin_lock _raw_spin_unlock _raw_spin_lock_irqsave _raw_spin_unlock_irqrestore _raw_read_lock _raw_read_unlock trace_hardirqs_on trace_hardirqs_off preempt_count_add preempt_count_sub; do
-            printf "%-32s " "$s"
-            strings $IMG | grep -c "^${s}$"
+            n=$(strings $IMG | grep -c "^${s}$" || true)
+            printf "%-32s %s\n" "$s" "$n"
           done
+          echo "===== DONE ====="
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
