@@ -84,27 +84,25 @@ jobs:
           set -euo pipefail
           printf 'Patching kernel/softirq.c for trace_hardirqs_on/off symbols...\n'
           
-          sed -i '/^EXPORT_SYMBOL(raise_softirq);$/a\
-\
-/* Shim functions for TwT driver - undef macros first */\
-#ifdef trace_hardirqs_on\
-#undef trace_hardirqs_on\
-#endif\
-#ifdef trace_hardirqs_off\
-#undef trace_hardirqs_off\
-#endif\
-\
-void trace_hardirqs_on(void)\
-{\
-    /* Intentionally empty - shim for TwT driver */\
-}\
-EXPORT_SYMBOL(trace_hardirqs_on);\
-\
-void trace_hardirqs_off(void)\
-{\
-    /* Intentionally empty - shim for TwT driver */\
-}\
-EXPORT_SYMBOL(trace_hardirqs_off);' kernel/softirq.c
+          printf '\n/* Shim functions for TwT driver - undef macros first */\n' >> kernel/softirq.c
+          printf '#ifdef trace_hardirqs_on\n' >> kernel/softirq.c
+          printf '#undef trace_hardirqs_on\n' >> kernel/softirq.c
+          printf '#endif\n' >> kernel/softirq.c
+          printf '#ifdef trace_hardirqs_off\n' >> kernel/softirq.c
+          printf '#undef trace_hardirqs_off\n' >> kernel/softirq.c
+          printf '#endif\n' >> kernel/softirq.c
+          printf '\n' >> kernel/softirq.c
+          printf 'void trace_hardirqs_on(void)\n' >> kernel/softirq.c
+          printf '{\n' >> kernel/softirq.c
+          printf '    /* Intentionally empty - shim for TwT driver */\n' >> kernel/softirq.c
+          printf '}\n' >> kernel/softirq.c
+          printf 'EXPORT_SYMBOL(trace_hardirqs_on);\n' >> kernel/softirq.c
+          printf '\n' >> kernel/softirq.c
+          printf 'void trace_hardirqs_off(void)\n' >> kernel/softirq.c
+          printf '{\n' >> kernel/softirq.c
+          printf '    /* Intentionally empty - shim for TwT driver */\n' >> kernel/softirq.c
+          printf '}\n' >> kernel/softirq.c
+          printf 'EXPORT_SYMBOL(trace_hardirqs_off);\n' >> kernel/softirq.c
           
           printf 'Verification:\n'
           tail -20 kernel/softirq.c
