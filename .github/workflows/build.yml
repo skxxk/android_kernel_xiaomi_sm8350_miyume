@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     steps:
@@ -18,9 +18,6 @@ jobs:
         run: |
           set -e
           DEF=arch/arm64/configs/venus_defconfig
-          echo "===== BEFORE ====="
-          grep -n "MODVERSIONS" $DEF || true
-          wc -l $DEF
           sed -i 's/^CONFIG_MODVERSIONS=y$/# CONFIG_MODVERSIONS is not set/' $DEF
           sed -i '/# ===== third-party module support =====/,$d' $DEF
           printf '\n# ===== third-party module support =====\nCONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_TRACE_IRQFLAGS=y\nCONFIG_DEBUG_SPINLOCK=y\nCONFIG_DEBUG_PREEMPT=y\n' >> $DEF
@@ -28,7 +25,6 @@ jobs:
           echo "===== AFTER ====="
           grep -n "MODVERSIONS" $DEF || true
           grep -n "KPROBES\|DEBUG_SPINLOCK\|DEBUG_PREEMPT\|TRACE_IRQFLAGS" $DEF || true
-          wc -l $DEF
 
       - name: Install build deps
         run: |
@@ -38,20 +34,18 @@ jobs:
             git gnupg gperf imagemagick lib32readline-dev lib32ncurses5-dev \
             lib32z1-dev libelf-dev liblz4-tool libsdl1.2-dev libssl-dev \
             libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
-            xsltproc zip zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler \
-            libtinfo5
+            xsltproc zip zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
 
-      - name: Download Clang 18.1.8
+      - name: Download AOSP Clang 18
         run: |
           set -e
           mkdir -p $HOME/toolchains
           cd $HOME/toolchains
-          URL=https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-          curl -fL --retry 3 --retry-delay 5 -o clang.tar.xz "$URL"
-          ls -lh clang.tar.xz
-          tar -xf clang.tar.xz
-          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 clang
-          ls -la $HOME/toolchains/clang/bin/clang
+          URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz
+          curl -fL --retry 3 --retry-delay 5 -o clang.tar.gz "$URL"
+          ls -lh clang.tar.gz
+          mkdir -p clang && tar -xzf clang.tar.gz -C clang
+          ls -la clang/bin/clang
 
       - name: Verify toolchain
         run: |
@@ -60,33 +54,15 @@ jobs:
           which clang
           clang --version
           ld.lld --version
-          nproc --all
-
-      - name: Generate defconfig and check .config
-        run: |
-          set -e
-          export PATH=$HOME/toolchains/clang/bin:$PATH
-          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
-          echo "===== .config key items ====="
-          grep -E "CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_DEBUG_SPINLOCK|CONFIG_DEBUG_PREEMPT|CONFIG_TRACE_IRQFLAGS|CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD" out/.config || true
 
       - name: Build kernel Image
         run: |
           set -e
           export PATH=$HOME/toolchains/clang/bin:$PATH
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
+          echo "===== .config key items ====="
+          grep -E "CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_DEBUG_SPINLOCK|CONFIG_DEBUG_PREEMPT|CONFIG_TRACE_IRQFLAGS|CONFIG_MODVERSIONS" out/.config || true
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
-
-      - name: Verify exported symbols in Image
-        run: |
-          IMG=out/arch/arm64/boot/Image
-          ls -lh $IMG
-          echo "===== symbol presence check ====="
-          for s in register_kprobe unregister_kprobe register_kretprobe unregister_kretprobe \
-                   _raw_spin_lock _raw_spin_unlock _raw_spin_lock_irqsave _raw_spin_unlock_irqrestore \
-                   trace_hardirqs_on trace_hardirqs_off preempt_count_add preempt_count_sub; do
-            n=$(strings "$IMG" | grep -c "^${s}$" || true)
-            echo "$s : $n"
-          done
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
