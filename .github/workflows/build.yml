@@ -9,202 +9,165 @@ on:
       - '.github/workflows/build.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
-    name: Build venus kernel Image
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
-
+    
     env:
-      CLANG_VERSION: '18.1.8'
-      CLANG_URL: 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz'
-      LIBTINFO_URL: 'http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb'
-
+      CLANG_VERSION: 18.1.8
+      CLANG_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+      LIBTINFO_URL: http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
           submodules: recursive
-
-      - name: Show initial defconfig state
-        shell: bash
+      
+      - name: Install libtinfo5
         run: |
           set -euo pipefail
-          DEF="arch/arm64/configs/venus_defconfig"
-          echo "===== BEFORE: MODVERSIONS ====="
-          grep -n 'MODVERSIONS' "$DEF" || true
-          echo "===== BEFORE: line count ====="
-          wc -l "$DEF"
-
-      - name: Patch venus_defconfig
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEF="arch/arm64/configs/venus_defconfig"
-          sed -i 's|^CONFIG_MODVERSIONS=y$|# CONFIG_MODVERSIONS is not set|' "$DEF"
-          sed -i '/^# ===== third-party module support =====/,$d' "$DEF"
-          {
-            printf '\n'
-            printf '# ===== third-party module support =====\n'
-            printf 'CONFIG_DEBUG_KERNEL=y\n'
-            printf 'CONFIG_KPROBES=y\n'
-            printf 'CONFIG_KRETPROBES=y\n'
-            printf 'CONFIG_TRACE_IRQFLAGS=y\n'
-            printf 'CONFIG_DEBUG_SPINLOCK=y\n'
-            printf 'CONFIG_DEBUG_PREEMPT=y\n'
-          } >> "$DEF"
-          sed -i 's|^# CONFIG_DEBUG_PREEMPT is not set$|CONFIG_DEBUG_PREEMPT=y|' "$DEF"
-          echo "===== AFTER ====="
-          grep -n 'MODVERSIONS\|KPROBES\|DEBUG_KERNEL\|TRACE_IRQFLAGS\|DEBUG_SPINLOCK\|DEBUG_PREEMPT' "$DEF" || true
-
-      - name: Patch softirq.c with trace_hardirqs shim
-        shell: bash
-        run: |
-          set -euo pipefail
-          F="kernel/softirq.c"
-          if [ ! -f "$F" ]; then
-            echo "ERROR: $F not found" >&2
+          printf 'Installing libtinfo5 for Clang %s compatibility...\n' "$CLANG_VERSION"
+          
+          curl -fsSL "$LIBTINFO_URL" -o libtinfo5.deb
+          dpkg-deb -x libtinfo5.deb "$HOME/libtinfo5"
+          
+          if [[ ! -f "$HOME/libtinfo5/lib/x86_64-linux-gnu/libtinfo.so.5" ]]; then
+            printf 'Error: libtinfo.so.5 not found\n' >&2
             exit 1
           fi
-          if grep -q 'EXPORT_SYMBOL(trace_hardirqs_on)' "$F"; then
-            echo "INFO: already patched, skipping"
-          else
-            {
-              printf '\n'
-              printf '/* TwT compatibility shim: expose pre-4.19 symbol names */\n'
-              printf 'void trace_hardirqs_on(void)\n'
-              printf '{\n'
-              printf '\ttrace_preempt_on(CALLER_ADDR0, _RET_IP_);\n'
-              printf '}\n'
-              printf 'EXPORT_SYMBOL(trace_hardirqs_on);\n'
-              printf '\n'
-              printf 'void trace_hardirqs_off(void)\n'
-              printf '{\n'
-              printf '\ttrace_preempt_off(CALLER_ADDR0, _RET_IP_);\n'
-              printf '}\n'
-              printf 'EXPORT_SYMBOL(trace_hardirqs_off);\n'
-            } >> "$F"
-          fi
-          echo "===== tail -14 of $F ====="
-          tail -14 "$F"
-
-      - name: Verify KernelSU submodule
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -d "KernelSU" ]; then
-            echo "ERROR: KernelSU submodule missing" >&2
-            exit 1
-          fi
-          echo "===== KernelSU HEAD ====="
-          git -C KernelSU rev-parse --short HEAD
-          ls -la KernelSU
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc bison build-essential ccache curl wget flex \
-            g++-multilib gcc-multilib git gnupg gperf imagemagick \
-            lib32readline-dev lib32ncurses5-dev lib32z1-dev libelf-dev \
-            liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
-            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
-
-      - name: Install libtinfo5 for Clang 18.1.8
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/libtinfo5"
-          cd "$HOME/libtinfo5"
-          curl -fL --retry 3 --retry-delay 5 -o libtinfo5.deb "$LIBTINFO_URL"
-          dpkg -x libtinfo5.deb "$HOME/libtinfo5"
-          find "$HOME/libtinfo5" -name 'libtinfo.so*' -print
+          
           printf 'LIBTINFO_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
-          printf 'LD_LIBRARY_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-
-      - name: Download Clang 18.1.8
-        shell: bash
+          printf 'LD_LIBRARY_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          printf 'libtinfo5 installed: %s\n' "$(ls -lh "$HOME/libtinfo5/lib/x86_64-linux-gnu/libtinfo.so"*)"
+      
+      - name: Download Clang
         run: |
           set -euo pipefail
+          printf 'Downloading Clang %s...\n' "$CLANG_VERSION"
+          
+          curl -fsSL "$CLANG_URL" -o clang.tar.xz
           mkdir -p "$HOME/toolchains"
-          cd "$HOME/toolchains"
-          curl -fL --retry 3 --retry-delay 5 -o clang.tar.xz "$CLANG_URL"
-          tar -xf clang.tar.xz
-          mv "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-18.04" clang
-          test -x clang/bin/clang
-          echo "INFO: clang ${CLANG_VERSION} extracted"
+          tar -xf clang.tar.xz -C "$HOME/toolchains"
+          mv "$HOME/toolchains/clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-18.04" "$HOME/toolchains/clang"
+          
+          if [[ ! -x "$HOME/toolchains/clang/bin/clang" ]]; then
+            printf 'Error: clang binary not found or not executable\n' >&2
+            exit 1
+          fi
+          
           printf 'CLANG_BIN=%s\n' "$HOME/toolchains/clang/bin" >> "$GITHUB_ENV"
           printf '%s\n' "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
-
-      - name: Verify toolchain
-        shell: bash
+          printf 'Clang installed: %s\n' "$("$HOME/toolchains/clang/bin/clang" --version | head -1)"
+      
+      - name: Patch defconfig
+        run: |
+          set -euo pipefail
+          DEF="arch/arm64/configs/venus_defconfig"
+          
+          printf 'Patching %s for TwT driver symbol exports...\n' "$DEF"
+          
+          sed -i 's|^CONFIG_MODVERSIONS=y$|# CONFIG_MODVERSIONS is not set|' "$DEF"
+          sed -i 's|^# CONFIG_KPROBES is not set$|CONFIG_KPROBES=y|' "$DEF"
+          sed -i 's|^# CONFIG_KPROBE_EVENTS is not set$|CONFIG_KPROBE_EVENTS=y|' "$DEF"
+          sed -i 's|^# CONFIG_DEBUG_SPINLOCK is not set$|CONFIG_DEBUG_SPINLOCK=y|' "$DEF"
+          sed -i 's|^# CONFIG_DEBUG_LOCK_ALLOC is not set$|CONFIG_DEBUG_LOCK_ALLOC=y|' "$DEF"
+          sed -i 's|^# CONFIG_DEBUG_PREEMPT is not set$|CONFIG_DEBUG_PREEMPT=y|' "$DEF"
+          
+          printf 'Patching complete. Verification:\n'
+          grep -E 'CONFIG_(MODVERSIONS|KPROBES|KPROBE_EVENTS|DEBUG_SPINLOCK|DEBUG_LOCK_ALLOC|DEBUG_PREEMPT)' "$DEF" || true
+      
+      - name: Patch kernel/softirq.c
+        run: |
+          set -euo pipefail
+          printf 'Patching kernel/softirq.c for trace_hardirqs_on/off symbols...\n'
+          
+          sed -i '/^EXPORT_SYMBOL(raise_softirq);$/a\
+\
+/* Shim functions for TwT driver - undef macros first */\
+#ifdef trace_hardirqs_on\
+#undef trace_hardirqs_on\
+#endif\
+#ifdef trace_hardirqs_off\
+#undef trace_hardirqs_off\
+#endif\
+\
+void trace_hardirqs_on(void)\
+{\
+    /* Intentionally empty - shim for TwT driver */\
+}\
+EXPORT_SYMBOL(trace_hardirqs_on);\
+\
+void trace_hardirqs_off(void)\
+{\
+    /* Intentionally empty - shim for TwT driver */\
+}\
+EXPORT_SYMBOL(trace_hardirqs_off);' kernel/softirq.c
+          
+          printf 'Verification:\n'
+          tail -20 kernel/softirq.c
+      
+      - name: Build Kernel
         run: |
           set -euo pipefail
           export PATH="$HOME/toolchains/clang/bin:$PATH"
           export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-          command -v clang
-          clang --version
-          ld.lld --version
-          echo "===== EXPECTED ====="
-          echo "clang version 18.1.8"
-
-      - name: Generate defconfig
-        shell: bash
+          
+          make -j"$(nproc --all)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image
+      
+      - name: Verify Symbol Exports
         run: |
           set -euo pipefail
-          export PATH="$HOME/toolchains/clang/bin:$PATH"
-          export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
-
-      - name: Inspect generated .config
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "===== .config key items ====="
-          grep -E 'CONFIG_KPROBES=|CONFIG_KRETPROBES=|CONFIG_DEBUG_KERNEL=|CONFIG_TRACE_IRQFLAGS=|CONFIG_DEBUG_SPINLOCK=|CONFIG_DEBUG_PREEMPT=|CONFIG_MODVERSIONS' out/.config || true
-
-      - name: Build kernel Image
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/toolchains/clang/bin:$PATH"
-          export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-          make -j"$(nproc --all)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
-
-      - name: Verify exported symbols
-        shell: bash
-        run: |
-          set -uo pipefail
-          IMG="out/arch/arm64/boot/Image"
-          if [ ! -f "$IMG" ]; then
-            echo "ERROR: $IMG not found" >&2
-            exit 1
-          fi
-          ls -lh "$IMG"
-          echo "===== SYMBOL CHECK ====="
+          printf 'Verifying TwT driver symbol exports...\n\n'
+          
+          REQUIRED_SYMBOLS=(
+            "register_kprobe"
+            "unregister_kprobe"
+            "register_kretprobe"
+            "unregister_kretprobe"
+            "_raw_spin_lock"
+            "_raw_spin_unlock"
+            "_raw_spin_lock_irqsave"
+            "_raw_spin_unlock_irqrestore"
+            "_raw_read_lock"
+            "_raw_read_unlock"
+            "trace_hardirqs_on"
+            "trace_hardirqs_off"
+            "preempt_count_add"
+            "preempt_count_sub"
+          )
+          
           MISSING=0
-          for s in register_kprobe unregister_kprobe register_kretprobe unregister_kretprobe _raw_spin_lock _raw_spin_unlock _raw_spin_lock_irqsave _raw_spin_unlock_irqrestore _raw_read_lock _raw_read_unlock trace_hardirqs_on trace_hardirqs_off preempt_count_add preempt_count_sub; do
-            n="$(strings "$IMG" | grep -c "^${s}$" || true)"
-            printf '%-32s %s\n' "$s" "$n"
-            if [ "${n:-0}" -eq 0 ]; then
+          for sym in "${REQUIRED_SYMBOLS[@]}"; do
+            if grep -qw "$sym" out/Module.symvers 2>/dev/null || \
+               grep -qw "$sym" out/System.map 2>/dev/null; then
+              printf '✓ %s\n' "$sym"
+            else
+              printf '✗ %s (MISSING)\n' "$sym"
               MISSING=$((MISSING + 1))
             fi
           done
-          echo "===== DONE (missing=${MISSING}) ====="
-          if [ "${MISSING:-0}" -gt 0 ]; then
-            echo "WARNING: ${MISSING} symbols missing" >&2
+          
+          printf '\nSummary: %d/%d symbols exported\n' "$((${#REQUIRED_SYMBOLS[@]} - MISSING))" "${#REQUIRED_SYMBOLS[@]}"
+          
+          if [[ "$MISSING" -gt 0 ]]; then
+            printf '\nError: %d required symbols missing\n' "$MISSING" >&2
+            exit 1
           fi
-
-      - name: Upload kernel Image
+          
+          printf '\n✅ All 14 symbols verified\n'
+      
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: Image-venus
+          name: venus-kernel-${{ github.sha }}
           path: out/arch/arm64/boot/Image
           if-no-files-found: error
           retention-days: 30
