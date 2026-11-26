@@ -44,10 +44,8 @@ jobs:
         run: |
           set -euo pipefail
           DEF="arch/arm64/configs/venus_defconfig"
-
           sed -i 's|^CONFIG_MODVERSIONS=y$|# CONFIG_MODVERSIONS is not set|' "$DEF"
           sed -i '/^# ===== third-party module support =====/,$d' "$DEF"
-
           {
             printf '\n'
             printf '# ===== third-party module support =====\n'
@@ -58,9 +56,7 @@ jobs:
             printf 'CONFIG_DEBUG_SPINLOCK=y\n'
             printf 'CONFIG_DEBUG_PREEMPT=y\n'
           } >> "$DEF"
-
           sed -i 's|^# CONFIG_DEBUG_PREEMPT is not set$|CONFIG_DEBUG_PREEMPT=y|' "$DEF"
-
           echo "===== AFTER ====="
           grep -n 'MODVERSIONS\|KPROBES\|DEBUG_KERNEL\|TRACE_IRQFLAGS\|DEBUG_SPINLOCK\|DEBUG_PREEMPT' "$DEF" || true
 
@@ -69,12 +65,10 @@ jobs:
         run: |
           set -euo pipefail
           F="kernel/softirq.c"
-
           if [ ! -f "$F" ]; then
             echo "ERROR: $F not found" >&2
             exit 1
           fi
-
           if grep -q 'EXPORT_SYMBOL(trace_hardirqs_on)' "$F"; then
             echo "INFO: already patched, skipping"
           else
@@ -94,7 +88,6 @@ jobs:
               printf 'EXPORT_SYMBOL(trace_hardirqs_off);\n'
             } >> "$F"
           fi
-
           echo "===== tail -14 of $F ====="
           tail -14 "$F"
 
@@ -132,7 +125,7 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 -o libtinfo5.deb "$LIBTINFO_URL"
           dpkg -x libtinfo5.deb "$HOME/libtinfo5"
           find "$HOME/libtinfo5" -name 'libtinfo.so*' -print
-          echo "$HOME/libtinfo5/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          printf 'LIBTINFO_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
           printf 'LD_LIBRARY_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Download Clang 18.1.8
@@ -146,7 +139,8 @@ jobs:
           mv "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-18.04" clang
           test -x clang/bin/clang
           echo "INFO: clang ${CLANG_VERSION} extracted"
-          echo "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
+          printf 'CLANG_BIN=%s\n' "$HOME/toolchains/clang/bin" >> "$GITHUB_ENV"
+          printf '%s\n' "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
 
       - name: Verify toolchain
         shell: bash
