@@ -3,98 +3,198 @@ name: Build Venus Kernel
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
     paths:
       - '.github/workflows/build.yml'
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build venus kernel Image
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
+    env:
+      CLANG_VERSION: '18.1.8'
+      CLANG_URL: 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz'
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           submodules: recursive
 
+      - name: Show initial defconfig state
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEF="arch/arm64/configs/venus_defconfig"
+          echo "===== BEFORE: MODVERSIONS ====="
+          grep -n 'MODVERSIONS' "$DEF" || true
+          echo "===== BEFORE: line count ====="
+          wc -l "$DEF"
+
       - name: Patch venus_defconfig
+        shell: bash
         run: |
-          set -e
-          DEF=arch/arm64/configs/venus_defconfig
-          sed -i 's/^CONFIG_MODVERSIONS=y$/# CONFIG_MODVERSIONS is not set/' $DEF
-          sed -i '/# ===== third-party module support =====/,$d' $DEF
-          printf '\n# ===== third-party module support =====\nCONFIG_DEBUG_KERNEL=y\nCONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_TRACE_IRQFLAGS=y\nCONFIG_DEBUG_SPINLOCK=y\nCONFIG_DEBUG_PREEMPT=y\n' >> $DEF
-          sed -i 's/^# CONFIG_DEBUG_PREEMPT is not set$/CONFIG_DEBUG_PREEMPT=y/' $DEF
+          set -euo pipefail
+          DEF="arch/arm64/configs/venus_defconfig"
+
+          sed -i 's|^CONFIG_MODVERSIONS=y$|# CONFIG_MODVERSIONS is not set|' "$DEF"
+          sed -i '/^# ===== third-party module support =====/,$d' "$DEF"
+
+          {
+            printf '\n'
+            printf '# ===== third-party module support =====\n'
+            printf 'CONFIG_DEBUG_KERNEL=y\n'
+            printf 'CONFIG_KPROBES=y\n'
+            printf 'CONFIG_KRETPROBES=y\n'
+            printf 'CONFIG_TRACE_IRQFLAGS=y\n'
+            printf 'CONFIG_DEBUG_SPINLOCK=y\n'
+            printf 'CONFIG_DEBUG_PREEMPT=y\n'
+          } >> "$DEF"
+
+          sed -i 's|^# CONFIG_DEBUG_PREEMPT is not set$|CONFIG_DEBUG_PREEMPT=y|' "$DEF"
+
           echo "===== AFTER ====="
-          grep -n "MODVERSIONS\|KPROBES\|DEBUG_KERNEL\|TRACE_IRQFLAGS\|DEBUG_SPINLOCK\|DEBUG_PREEMPT" $DEF || true
+          grep -n 'MODVERSIONS\|KPROBES\|DEBUG_KERNEL\|TRACE_IRQFLAGS\|DEBUG_SPINLOCK\|DEBUG_PREEMPT' "$DEF" || true
 
-      - name: Patch softirq.c add trace_hardirqs shim
+      - name: Patch softirq.c with trace_hardirqs shim
+        shell: bash
         run: |
-          set -e
-          F=kernel/softirq.c
-          if grep -q "EXPORT_SYMBOL(trace_hardirqs_on)" $F; then
-            echo "already patched"
-          else
-            printf '\n/* TwT shim */\nvoid trace_hardirqs_on(void)\n{\n\ttrace_preempt_on(CALLER_ADDR0, _RET_IP_);\n}\nEXPORT_SYMBOL(trace_hardirqs_on);\n\nvoid trace_hardirqs_off(void)\n{\n\ttrace_preempt_off(CALLER_ADDR0, _RET_IP_);\n}\nEXPORT_SYMBOL(trace_hardirqs_off);\n' >> $F
+          set -euo pipefail
+          F="kernel/softirq.c"
+
+          if [ ! -f "$F" ]; then
+            echo "ERROR: $F not found" >&2
+            exit 1
           fi
-          echo "===== tail of softirq.c ====="
-          tail -14 $F
 
-      - name: Check submodules
-        run: |
-          ls -la KernelSU || echo "KernelSU missing"
+          if grep -q 'EXPORT_SYMBOL(trace_hardirqs_on)' "$F"; then
+            echo "INFO: already patched, skipping"
+          else
+            {
+              printf '\n'
+              printf '/* TwT compatibility shim: expose pre-4.19 symbol names */\n'
+              printf 'void trace_hardirqs_on(void)\n'
+              printf '{\n'
+              printf '\ttrace_preempt_on(CALLER_ADDR0, _RET_IP_);\n'
+              printf '}\n'
+              printf 'EXPORT_SYMBOL(trace_hardirqs_on);\n'
+              printf '\n'
+              printf 'void trace_hardirqs_off(void)\n'
+              printf '{\n'
+              printf '\ttrace_preempt_off(CALLER_ADDR0, _RET_IP_);\n'
+              printf '}\n'
+              printf 'EXPORT_SYMBOL(trace_hardirqs_off);\n'
+            } >> "$F"
+          fi
 
-      - name: Install build deps
+          echo "===== tail -14 of $F ====="
+          tail -14 "$F"
+
+      - name: Verify KernelSU submodule
+        shell: bash
         run: |
+          set -euo pipefail
+          if [ ! -d "KernelSU" ]; then
+            echo "ERROR: KernelSU submodule missing" >&2
+            exit 1
+          fi
+          echo "===== KernelSU HEAD ====="
+          git -C KernelSU rev-parse --short HEAD
+          echo "===== KernelSU directory ====="
+          ls -la KernelSU
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache curl wget flex g++-multilib gcc-multilib \
-            git gnupg gperf imagemagick lib32readline-dev lib32ncurses5-dev \
-            lib32z1-dev libelf-dev liblz4-tool libsdl1.2-dev libssl-dev \
-            libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
-            xsltproc zip zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc bison build-essential ccache curl wget flex \
+            g++-multilib gcc-multilib git gnupg gperf imagemagick \
+            lib32readline-dev lib32ncurses5-dev lib32z1-dev libelf-dev \
+            liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
+            zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
 
-      - name: Download AOSP Clang 18
+      - name: Download Clang 18.1.8 (ubuntu-22.04 build)
+        shell: bash
         run: |
-          set -e
-          mkdir -p $HOME/toolchains
-          cd $HOME/toolchains
-          URL=https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz
-          curl -fL --retry 3 --retry-delay 5 -o clang.tar.gz "$URL"
-          mkdir -p clang && tar -xzf clang.tar.gz -C clang
-          ls -la clang/bin/clang
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          curl -fL --retry 3 --retry-delay 5 -o clang.tar.xz "$CLANG_URL"
+          tar -xf clang.tar.xz
+          mv "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-22.04" clang
+          test -x clang/bin/clang
+          echo "INFO: clang ${CLANG_VERSION} extracted"
 
       - name: Verify toolchain
+        shell: bash
         run: |
-          set -e
-          export PATH=$HOME/toolchains/clang/bin:$PATH
-          which clang
+          set -euo pipefail
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          command -v clang
           clang --version
+          ld.lld --version
+          echo "===== EXPECTED ====="
+          echo "clang 18.1.8 / lld 18.1.8"
+
+      - name: Generate defconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
+
+      - name: Inspect generated .config
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "===== .config key items ====="
+          grep -E 'CONFIG_KPROBES=|CONFIG_KRETPROBES=|CONFIG_DEBUG_KERNEL=|CONFIG_TRACE_IRQFLAGS=|CONFIG_DEBUG_SPINLOCK=|CONFIG_DEBUG_PREEMPT=|CONFIG_MODVERSIONS' out/.config || true
 
       - name: Build kernel Image
+        shell: bash
         run: |
-          set -e
-          export PATH=$HOME/toolchains/clang/bin:$PATH
-          make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
-          echo "===== .config ====="
-          grep -E "CONFIG_KPROBES=|CONFIG_KRETPROBES=|CONFIG_DEBUG_KERNEL=|CONFIG_TRACE_IRQFLAGS=|CONFIG_DEBUG_SPINLOCK=|CONFIG_DEBUG_PREEMPT=|CONFIG_MODVERSIONS" out/.config || true
-          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
+          set -euo pipefail
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          make -j"$(nproc --all)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
 
-      - name: Verify symbols in Image
+      - name: Verify exported symbols
+        shell: bash
         run: |
-          IMG=out/arch/arm64/boot/Image
+          set -uo pipefail
+          IMG="out/arch/arm64/boot/Image"
+          if [ ! -f "$IMG" ]; then
+            echo "ERROR: $IMG not found" >&2
+            exit 1
+          fi
+          ls -lh "$IMG"
           echo "===== SYMBOL CHECK ====="
+          MISSING=0
           for s in register_kprobe unregister_kprobe register_kretprobe unregister_kretprobe _raw_spin_lock _raw_spin_unlock _raw_spin_lock_irqsave _raw_spin_unlock_irqrestore _raw_read_lock _raw_read_unlock trace_hardirqs_on trace_hardirqs_off preempt_count_add preempt_count_sub; do
-            n=$(strings $IMG | grep -c "^${s}$" || true)
-            printf "%-32s %s\n" "$s" "$n"
+            n="$(strings "$IMG" | grep -c "^${s}$" || true)"
+            printf '%-32s %s\n' "$s" "$n"
+            if [ "${n:-0}" -eq 0 ]; then
+              MISSING=$((MISSING + 1))
+            fi
           done
-          echo "===== DONE ====="
+          echo "===== DONE (missing=${MISSING}) ====="
+          if [ "${MISSING:-0}" -gt 0 ]; then
+            echo "WARNING: ${MISSING} symbols missing" >&2
+          fi
 
-      - name: Upload Image
+      - name: Upload kernel Image
         uses: actions/upload-artifact@v4
         with:
           name: Image-venus
           path: out/arch/arm64/boot/Image
           if-no-files-found: error
+          retention-days: 30
