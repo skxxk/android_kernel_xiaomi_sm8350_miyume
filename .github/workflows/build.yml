@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     steps:
@@ -14,14 +14,28 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Show defconfig markers
+      - name: Patch venus_defconfig
         run: |
           DEF=arch/arm64/configs/venus_defconfig
-          echo "===== MODVERSIONS ====="
+          echo "===== BEFORE ====="
           grep -n "MODVERSIONS" $DEF || true
-          echo "===== KPROBES / DEBUG ====="
+          wc -l $DEF
+
+          # 1) 关闭 MODVERSIONS
+          sed -i 's/^CONFIG_MODVERSIONS=y$/# CONFIG_MODVERSIONS is not set/' $DEF
+
+          # 2) 移除可能已存在的追加段，避免重复
+          sed -i '/# ===== third-party module support =====/,$d' $DEF
+
+          # 3) 追加所需配置
+          printf '\n# ===== third-party module support =====\nCONFIG_KPROBES=y\nCONFIG_KRETPROBES=y\nCONFIG_TRACE_IRQFLAGS=y\nCONFIG_DEBUG_SPINLOCK=y\nCONFIG_DEBUG_PREEMPT=y\n' >> $DEF
+
+          # 4) 原文件里的 DEBUG_PREEMPT 关闭行改为开启（双保险）
+          sed -i 's/^# CONFIG_DEBUG_PREEMPT is not set$/CONFIG_DEBUG_PREEMPT=y/' $DEF
+
+          echo "===== AFTER ====="
+          grep -n "MODVERSIONS" $DEF || true
           grep -n "KPROBES\|DEBUG_SPINLOCK\|DEBUG_PREEMPT\|TRACE_IRQFLAGS" $DEF || true
-          echo "===== total lines ====="
           wc -l $DEF
 
       - name: Install build deps
@@ -32,16 +46,58 @@ jobs:
             git gnupg gperf imagemagick lib32readline-dev lib32ncurses5-dev \
             lib32z1-dev libelf-dev liblz4-tool libsdl1.2-dev libssl-dev \
             libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
-            xsltproc zip zlib1g-dev python3 python-is-python3
+            xsltproc zip zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
 
       - name: Install Clang 18.1.8
         run: |
           mkdir -p $HOME/toolchains
           cd $HOME/toolchains
-          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-aarch64-linux-gnu.tar.xz || \
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-          ls -la
+          tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 clang
+          echo "$HOME/toolchains/clang/bin" >> $GITHUB_PATH
 
-      - name: Build kernel
+      - name: Verify clang
         run: |
-          echo "placeholder - will be filled after checking build script"
+          clang --version
+          ld.lld --version
+
+      - name: Generate .config
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$HOME/toolchains/clang/bin:$PATH
+          export LLVM=1
+          export LLVM_IAS=1
+          make O=out ARCH=arm64 venus_defconfig
+
+      - name: Check generated .config
+        run: |
+          echo "===== .config key items ====="
+          grep -E "CONFIG_KPROBES|CONFIG_KRETPROBES|CONFIG_DEBUG_SPINLOCK|CONFIG_DEBUG_PREEMPT|CONFIG_TRACE_IRQFLAGS|CONFIG_MODVERSIONS" out/.config || true
+
+      - name: Build kernel Image
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$HOME/toolchains/clang/bin:$PATH
+          export LLVM=1
+          export LLVM_IAS=1
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image
+
+      - name: Verify exported symbols in Image
+        run: |
+          echo "===== symbol presence check ====="
+          for s in register_kprobe unregister_kprobe register_kretprobe unregister_kretprobe \
+                   _raw_spin_lock _raw_spin_unlock _raw_spin_lock_irqsave \
+                   trace_hardirqs_on trace_hardirqs_off preempt_count_add preempt_count_sub; do
+            n=$(strings out/arch/arm64/boot/Image | grep -c "^${s}$" || true)
+            echo "$s : $n"
+          done
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image-venus
+          path: out/arch/arm64/boot/Image
+          if-no-files-found: error
