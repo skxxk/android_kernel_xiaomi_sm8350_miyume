@@ -19,7 +19,8 @@ jobs:
 
     env:
       CLANG_VERSION: '18.1.8'
-      CLANG_URL: 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz'
+      CLANG_URL: 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz'
+      LIBTINFO_URL: 'http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb'
 
     steps:
       - name: Checkout repository
@@ -107,7 +108,6 @@ jobs:
           fi
           echo "===== KernelSU HEAD ====="
           git -C KernelSU rev-parse --short HEAD
-          echo "===== KernelSU directory ====="
           ls -la KernelSU
 
       - name: Install build dependencies
@@ -123,7 +123,19 @@ jobs:
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
             zlib1g-dev python3 python-is-python3 libfdt-dev device-tree-compiler
 
-      - name: Download Clang 18.1.8 (ubuntu-22.04 build)
+      - name: Install libtinfo5 for Clang 18.1.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/libtinfo5"
+          cd "$HOME/libtinfo5"
+          curl -fL --retry 3 --retry-delay 5 -o libtinfo5.deb "$LIBTINFO_URL"
+          dpkg -x libtinfo5.deb "$HOME/libtinfo5"
+          find "$HOME/libtinfo5" -name 'libtinfo.so*' -print
+          echo "$HOME/libtinfo5/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          printf 'LD_LIBRARY_PATH=%s\n' "$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Download Clang 18.1.8
         shell: bash
         run: |
           set -euo pipefail
@@ -131,26 +143,29 @@ jobs:
           cd "$HOME/toolchains"
           curl -fL --retry 3 --retry-delay 5 -o clang.tar.xz "$CLANG_URL"
           tar -xf clang.tar.xz
-          mv "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-22.04" clang
+          mv "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-18.04" clang
           test -x clang/bin/clang
           echo "INFO: clang ${CLANG_VERSION} extracted"
+          echo "$HOME/toolchains/clang/bin" >> "$GITHUB_PATH"
 
       - name: Verify toolchain
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/toolchains/clang/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
           command -v clang
           clang --version
           ld.lld --version
           echo "===== EXPECTED ====="
-          echo "clang 18.1.8 / lld 18.1.8"
+          echo "clang version 18.1.8"
 
       - name: Generate defconfig
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/toolchains/clang/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
 
       - name: Inspect generated .config
@@ -165,6 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/toolchains/clang/bin:$PATH"
+          export LD_LIBRARY_PATH="$HOME/libtinfo5/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
           make -j"$(nproc --all)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
 
       - name: Verify exported symbols
