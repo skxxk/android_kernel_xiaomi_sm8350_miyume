@@ -37,29 +37,14 @@ jobs:
           if grep -q "EXPORT_SYMBOL(trace_hardirqs_on)" $F; then
             echo "already patched"
           else
-            cat >> $F <<'PATCHEOF'
-
-/* TwT compatibility shim: expose pre-4.19 symbol names */
-void trace_hardirqs_on(void)
-{
-	trace_preempt_on(CALLER_ADDR0, _RET_IP_);
-}
-EXPORT_SYMBOL(trace_hardirqs_on);
-
-void trace_hardirqs_off(void)
-{
-	trace_preempt_off(CALLER_ADDR0, _RET_IP_);
-}
-EXPORT_SYMBOL(trace_hardirqs_off);
-PATCHEOF
+            printf '\n/* TwT shim */\nvoid trace_hardirqs_on(void)\n{\n\ttrace_preempt_on(CALLER_ADDR0, _RET_IP_);\n}\nEXPORT_SYMBOL(trace_hardirqs_on);\n\nvoid trace_hardirqs_off(void)\n{\n\ttrace_preempt_off(CALLER_ADDR0, _RET_IP_);\n}\nEXPORT_SYMBOL(trace_hardirqs_off);\n' >> $F
           fi
           echo "===== tail of softirq.c ====="
-          tail -16 $F
+          tail -14 $F
 
       - name: Check submodules
         run: |
           ls -la KernelSU || echo "KernelSU missing"
-          ls -la KernelSU/kernel 2>/dev/null || true
 
       - name: Install build deps
         run: |
@@ -93,7 +78,7 @@ PATCHEOF
           set -e
           export PATH=$HOME/toolchains/clang/bin:$PATH
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out venus_defconfig
-          echo "===== .config key items ====="
+          echo "===== .config ====="
           grep -E "CONFIG_KPROBES=|CONFIG_KRETPROBES=|CONFIG_DEBUG_KERNEL=|CONFIG_TRACE_IRQFLAGS=|CONFIG_DEBUG_SPINLOCK=|CONFIG_DEBUG_PREEMPT=|CONFIG_MODVERSIONS" out/.config || true
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 Image
 
